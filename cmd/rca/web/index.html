@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>卡丁车场微服务 · 故障根因定位分析台</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2330; --border: #2d3748;
+    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff; --good: #3fb950;
+    --warn: #d29922; --bad: #f85149; --purple: #bc8cff; --cyan: #39c5cf;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; }
+  header .stat { color: var(--muted); font-size: 12px; }
+  header .stat b { color: var(--text); }
+  .layout { display: grid; grid-template-columns: 320px 1fr 380px; gap: 12px; padding: 12px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px; margin-bottom: 12px;
+  }
+  .panel h2 {
+    font-size: 13px; margin: 0 0 10px; color: var(--accent);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .panel h2 .hint { color: var(--muted); font-weight: normal; font-size: 11px; }
+  select, input {
+    width: 100%; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 12px;
+  }
+  label { display:block; color: var(--muted); margin: 8px 0 4px; font-size: 11px; }
+  .scenario-list { max-height: 340px; overflow-y: auto; }
+  .sc-item {
+    padding: 7px 9px; border-radius: 6px; cursor: pointer; margin-bottom: 4px;
+    border: 1px solid transparent; font-size: 12px;
+  }
+  .sc-item:hover { background: var(--panel2); }
+  .sc-item.active { border-color: var(--accent); background: var(--panel2); }
+  .sc-item .row1 { display: flex; justify-content: space-between; }
+  .tag { font-size: 10px; padding: 1px 6px; border-radius: 10px; }
+  .tag.single { background: #1f3a5f; color: #79c0ff; }
+  .tag.double { background: #4a2c5e; color: #d2a8ff; }
+  .tag.hit { background: #1a3f2b; color: var(--good); }
+  .tag.miss { background: #4a1f1f; color: var(--bad); }
+  .sc-item .roots { color: var(--muted); margin-top: 3px; word-break: break-all; }
+  .sc-item .roots b { color: var(--warn); }
+  #graph { width: 100%; height: 560px; background: var(--panel2); border-radius: 8px; }
+  .node-label { font-size: 10px; fill: var(--text); pointer-events: none; }
+  .edge-label { font-size: 9px; fill: var(--muted); pointer-events: none; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; font-size: 11px; color: var(--muted); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; color: var(--muted); font-weight: normal; padding: 5px 6px; border-bottom: 1px solid var(--border); }
+  td { padding: 6px; border-bottom: 1px solid #21262d; vertical-align: top; }
+  tr.rank-row { cursor: pointer; }
+  tr.rank-row:hover { background: var(--panel2); }
+  tr.rank-row.selected { background: var(--panel2); }
+  .bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; min-width: 60px; }
+  .bar > div { height: 100%; border-radius: 3px; }
+  .svc-name { font-family: ui-monospace, monospace; font-size: 11px; }
+  .origin-self { color: var(--bad); }
+  .origin-propagated { color: var(--warn); }
+  .origin-reverse { color: var(--purple); }
+  .injected-dot { color: var(--warn); font-weight: bold; }
+  .evidence { background: var(--panel2); border-radius: 8px; padding: 10px; margin-top: 10px; font-size: 12px; }
+  .evidence h3 { margin: 0 0 8px; font-size: 12px; color: var(--cyan); }
+  .evidence ul { margin: 0; padding-left: 18px; }
+  .evidence li { margin-bottom: 4px; color: var(--muted); }
+  .evidence li b { color: var(--text); }
+  .path-chain { font-family: ui-monospace, monospace; background: #0d1117; padding: 6px 8px; border-radius: 6px; margin: 4px 0; word-break: break-all; }
+  .summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .kpi { background: var(--panel2); border-radius: 8px; padding: 10px; text-align: center; }
+  .kpi .v { font-size: 20px; font-weight: 600; }
+  .kpi .l { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .kpi.rca .v { color: var(--good); }
+  .kpi.base .v { color: var(--muted); }
+  .notes { background: #1a2030; border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; padding: 8px 10px; margin-top: 8px; }
+  .notes div { color: var(--muted); margin: 3px 0; }
+  .scroll { max-height: 300px; overflow-y: auto; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  .tab { padding: 4px 12px; border-radius: 6px; background: var(--panel2); cursor: pointer; color: var(--muted); font-size: 12px; }
+  .tab.active { background: #1f3a5f; color: var(--text); }
+  .muted { color: var(--muted); }
+  .ok { color: var(--good); } .fail { color: var(--bad); }
+  .tooltip {
+    position: fixed; display: none; background: #0d1117; border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px; font-size: 11px; z-index: 100; max-width: 280px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.5);
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>🏎️ 卡丁车场微服务 · 故障根因定位分析台</h1>
+  <span class="stat">服务数 <b id="h-nodes">-</b></span>
+  <span class="stat">调用边 <b id="h-edges">-</b></span>
+  <span class="stat">实验场景 <b id="h-count">-</b></span>
+  <span class="stat">总种子 <b id="h-seed">-</b></span>
+</header>
+
+<div class="layout">
+  <!-- 左栏: 场景列表 -->
+  <div>
+    <div class="panel">
+      <h2>故障场景 <span class="hint">固定种子可复现</span></h2>
+      <label>筛选</label>
+      <select id="filter">
+        <option value="all">全部场景</option>
+        <option value="miss">仅未命中 Hit@1</option>
+        <option value="double">仅双故障</option>
+        <option value="reverse">仅反向传导</option>
+        <option value="hit">仅命中场景</option>
+      </select>
+      <div class="scenario-list" id="scenario-list" style="margin-top:10px"></div>
+    </div>
+    <div class="panel">
+      <h2>实验汇总</h2>
+      <div id="summary"></div>
+    </div>
+  </div>
+
+  <!-- 中栏: 依赖图 -->
+  <div>
+    <div class="panel">
+      <h2>依赖图 · 异常分数 / 随机游走访问概率
+        <span class="hint">节点颜色=异常分,外圈=访问概率,边粗细=调用量</span>
+      </h2>
+      <svg id="graph"></svg>
+      <div class="legend">
+        <span><i style="background:#f85149"></i>高异常分</span>
+        <span><i style="background:#d29922"></i>中异常</span>
+        <span><i style="background:#3fb950"></i>低异常</span>
+        <span><i style="background:#bc8cff"></i>外圈:随机游走访问概率</span>
+        <span><i style="background:#58a6ff"></i>入口服务</span>
+        <span>⭐ 真实注入根因</span>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>各服务异常分数明细</h2>
+      <div class="scroll" id="anomaly-table"></div>
+    </div>
+  </div>
+
+  <!-- 右栏: 排名与证据 -->
+  <div>
+    <div class="panel">
+      <h2>根因排名 <span class="hint">访问概率 × 异常程度</span></h2>
+      <table id="rank-table">
+        <thead><tr><th>#</th><th>服务</th><th>嫌疑分</th><th>访问概率</th><th>异常分</th><th>来源</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="panel" id="evidence-panel">
+      <h2>排名依据</h2>
+      <div class="muted" id="evidence-empty">点击上方排名中的服务查看依据</div>
+      <div id="evidence" style="display:none"></div>
+    </div>
+    <div class="panel">
+      <h2>注入故障 × 定位结果对照</h2>
+      <div id="injection"></div>
+    </div>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+let scenarios = [], summary = null, current = null, selectedSvc = null;
+
+const METRIC_CN = {latency:'平均延迟', error:'错误率', cpu:'CPU', mem:'内存', conn:'连接池'};
+const KIND_CN = {latency_spike:'延迟飙升', error_injection:'错误注入',
+  resource_exhaustion:'资源耗尽', conn_pool_stall:'连接池打满'};
+const ORIGIN_CN = {self:'自身首发', propagated:'下游传导', reverse:'反向传导'};
+
+async function init() {
+  summary = await fetch('/api/summary').then(r => r.json());
+  scenarios = await fetch('/api/scenarios').then(r => r.json());
+  renderSummary();
+  renderList();
+  $('#filter').onchange = renderList;
+  $('#h-count').textContent = summary.all.count;
+  $('#h-seed').textContent = summary.masterSeed;
+  if (scenarios.length) await selectScenario(scenarios[0].id);
+}
+
+function renderSummary() {
+  const s = summary;
+  const kpi = (title, st, cls) => `
+    <div class="kpi ${cls}"><div class="v">${st.pctAt1}%</div><div class="l">${title} Hit@1<br>Hit@3 ${st.pctAt3}% · n=${st.count}</div></div>`;
+  let html = `<div class="summary-grid">
+    <div class="kpi rca"><div class="v">${s.all.pctAt1}%</div><div class="l">RCA Hit@1<br>Hit@3 ${s.all.pctAt3}%</div></div>
+    <div class="kpi base"><div class="v">${s.all.basePctAt1}%</div><div class="l">纯异常分 Hit@1<br>Hit@3 ${s.all.basePctAt3}%</div></div>
+    <div class="kpi rca"><div class="v">${s.double.pctAt1}%</div><div class="l">双故障 Hit@1<br>Hit@3 ${s.double.pctAt3}%</div></div>
+    <div class="kpi rca"><div class="v">${s.reverse.pctAt1}%</div><div class="l">反向传导 Hit@1<br>Hit@3 ${s.reverse.pctAt3}%</div></div>
+  </div>
+  <table style="margin-top:10px">
+    <thead><tr><th>分组</th><th>n</th><th>RCA@1</th><th>RCA@3</th><th>基线@1</th><th>基线@3</th></tr></thead><tbody>`;
+  const rows = [['单故障', s.single], ['双故障', s.double], ['反向传导', s.reverse], ['全部', s.all]];
+  for (const [name, st] of rows) {
+    html += `<tr><td>${name}</td><td>${st.count}</td>
+      <td class="ok">${st.pctAt1}%</td><td class="ok">${st.pctAt3}%</td>
+      <td class="muted">${st.basePctAt1}%</td><td class="muted">${st.basePctAt3}%</td></tr>`;
+  }
+  html += '</tbody></table>';
+  if (s.checkErrors && s.checkErrors.length) {
+    html += `<div class="notes" style="border-color:var(--bad)">⚠ 核对问题: ${s.checkErrors.length} 条</div>`;
+  } else {
+    html += `<div class="notes"><div class="ok">✔ 注入记录与定位结果逐条核对一致,无不一致项</div></div>`;
+  }
+  $('#summary').innerHTML = html;
+}
+
+function renderList() {
+  const f = $('#filter').value;
+  const list = scenarios.filter(sc => {
+    if (f === 'miss') return !sc.hitAt1;
+    if (f === 'hit') return sc.hitAt1;
+    if (f === 'double') return sc.double;
+    if (f === 'reverse') return sc.faults.some(x => x.Reverse);
+    return true;
+  });
+  $('#scenario-list').innerHTML = list.map(sc => `
+    <div class="sc-item ${current && current.ScenarioID === sc.id ? 'active' : ''}" data-id="${sc.id}">
+      <div class="row1">
+        <span>#${sc.id} <span class="tag ${sc.double ? 'double' : 'single'}">${sc.double ? '双故障' : '单故障'}</span></span>
+        <span class="tag ${sc.hitAt1 ? 'hit' : 'miss'}">${sc.hitAt1 ? 'Hit@1 ✓' : 'Miss ✗'}</span>
+      </div>
+      <div class="roots">真实根因: ${sc.trueRoots.map(r => `<b>${r}</b>`).join(', ')}</div>
+      <div class="roots" style="font-size:10px">Top5: ${sc.top5.join(' → ')}</div>
+    </div>`).join('');
+  document.querySelectorAll('.sc-item').forEach(el =>
+    el.onclick = () => selectScenario(+el.dataset.id));
+}
+
+async function selectScenario(id) {
+  current = await fetch(`/api/scenarios/${id}`).then(r => r.json());
+  selectedSvc = null;
+  renderList();
+  renderGraph();
+  renderRanking();
+  renderAnomalyTable();
+  renderInjection();
+  $('#evidence').style.display = 'none';
+  $('#evidence-empty').style.display = 'block';
+}
+
+// ---------- 依赖图(SVG 力导向) ----------
+function renderGraph() {
+  const svg = $('#graph');
+  const W = svg.clientWidth || 640, H = 560;
+  svg.innerHTML = '';
+  const nodes = current.Nodes.map(n => ({...n}));
+  const nodeMap = Object.fromEntries(nodes.map(n => [n.Service, n]));
+  const edges = current.Edges;
+  $('#h-nodes').textContent = nodes.length;
+  $('#h-edges').textContent = edges.length;
+
+  // 初始坐标按分层排布
+  const tierY = {edge: 0.08, biz: 0.36, cap: 0.64, data: 0.9};
+  const byTier = {};
+  nodes.forEach(n => (byTier[n.Tier] ||= []).push(n));
+  Object.entries(byTier).forEach(([tier, arr]) => {
+    arr.sort((a, b) => a.Service.localeCompare(b.Service));
+    arr.forEach((n, i) => {
+      n.x = W * (0.08 + 0.84 * (i + 1) / (arr.length + 1));
+      n.y = H * tierY[tier] + (Math.sin(i * 1.7) * 14);
+      n.vx = 0; n.vy = 0;
+    });
+  });
+
+  const link = edges.map(e => ({s: nodeMap[e.Caller], t: nodeMap[e.Callee], vol: e.Volume}));
+  const maxVol = Math.max(...edges.map(e => e.Volume));
+  // 简单力导向迭代
+  for (let iter = 0; iter < 260; iter++) {
+    for (const a of nodes) for (const b of nodes) {
+      if (a === b) continue;
+      const dx = a.x - b.x, dy = a.y - b.y;
+      const d2 = dx*dx + dy*dy + 0.01;
+      const f = 2600 / d2;
+      const d = Math.sqrt(d2);
+      a.vx += f * dx / d; a.vy += f * dy / d;
+    }
+    for (const l of link) {
+      const dx = l.t.x - l.s.x, dy = l.t.y - l.s.y;
+      const d = Math.sqrt(dx*dx + dy*dy) + 0.01;
+      const f = (d - 110) * 0.02;
+      l.s.vx += f * dx / d; l.s.vy += f * dy / d;
+      l.t.vx -= f * dx / d; l.t.vy -= f * dy / d;
+    }
+    for (const n of nodes) {
+      // 弱约束回自己的分层水平线
+      const targetY = H * tierY[n.Tier];
+      n.vy += (targetY - n.y) * 0.015;
+      n.vx *= 0.85; n.vy *= 0.85;
+      n.x = Math.max(40, Math.min(W - 40, n.x + n.vx));
+      n.y = Math.max(30, Math.min(H - 24, n.y + n.vy));
+    }
+  }
+
+  const maxAnom = Math.max(...nodes.map(n => n.Score), 0.01);
+  const maxVisit = Math.max(...Object.values(current.VisitProb));
+  const injected = new Set(current.TrueRoots);
+
+  const gEdges = svgEl('g');
+  for (const l of link) {
+    const w = 0.6 + 2.6 * l.vol / maxVol;
+    const line = svgEl('line', {x1: l.s.x, y1: l.s.y, x2: l.t.x, y2: l.t.y,
+      stroke: '#3a4556', 'stroke-width': w, 'marker-end': 'url(#arrow)'});
+    line.style.cursor = 'pointer';
+    line.onmouseenter = ev => showTip(ev, edgeTip(l));
+    line.onmouseleave = hideTip;
+    gEdges.appendChild(line);
+  }
+  svg.appendChild(defs());
+  svg.appendChild(gEdges);
+
+  const gNodes = svgEl('g');
+  for (const n of nodes) {
+    const r = 9 + 9 * n.Score / maxAnom;
+    const visitRatio = (current.VisitProb[n.Service] || 0) / maxVisit;
+    const fill = heatColor(n.Score / maxAnom);
+    // 外圈: 访问概率
+    const ring = svgEl('circle', {cx: n.x, cy: n.y, r: r + 4,
+      fill: 'none', stroke: '#bc8cff', 'stroke-width': 1 + 2.2 * visitRatio,
+      opacity: 0.25 + 0.7 * visitRatio});
+    gNodes.appendChild(ring);
+    const c = svgEl('circle', {cx: n.x, cy: n.y, r, fill,
+      stroke: n.Service === current.Entry ? '#58a6ff' : '#0d1117',
+      'stroke-width': n.Service === current.Entry ? 3 : 1.5,
+      style: 'cursor:pointer'});
+    c.onmouseenter = ev => showTip(ev, nodeTip(n));
+    c.onmouseleave = hideTip;
+    c.onclick = () => { selectedSvc = n.Service; renderRanking(); showEvidence(n.Service); };
+    gNodes.appendChild(c);
+    const label = svgEl('text', {x: n.x, y: n.y - r - 7, 'text-anchor': 'middle', class: 'node-label'});
+    label.textContent = n.Service + (injected.has(n.Service) ? ' ⭐' : '');
+    gNodes.appendChild(label);
+  }
+  svg.appendChild(gNodes);
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+}
+
+function defs() {
+  const d = svgEl('defs');
+  d.innerHTML = `<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+    markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="#3a4556"/></marker>`;
+  return d;
+}
+function svgEl(tag, attrs = {}) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+function heatColor(t) {
+  // 绿 -> 黄 -> 红
+  t = Math.max(0, Math.min(1, t));
+  const hue = 120 * (1 - t);
+  return `hsl(${hue}, 72%, 52%)`;
+}
+function nodeTip(n) {
+  const v = current.VisitProb[n.Service] || 0;
+  return `<b>${n.Service}</b> (${n.Tier})<br>异常分: ${n.Score.toFixed(3)}<br>
+    访问概率: ${(v*100).toFixed(2)}%<br>首次越界 tick: ${n.FirstBreach}<br>
+    z 值: ${Object.entries(n.ZScore).map(([k,z]) => `${METRIC_CN[k]} ${z.toFixed(1)}`).join('<br>')}`;
+}
+function edgeTip(l) {
+  const e = current.Edges.find(x => x.Caller === l.s.Service && x.Callee === l.t.Service);
+  return `<b>${e.Caller} → ${e.Callee}</b><br>调用量: ${e.CallCount} (${e.Volume.toFixed(0)}/tick)<br>
+    平均延迟: ${e.LatencyMs.toFixed(1)} ms<br>错误率: ${(e.ErrorRate*100).toFixed(2)}%`;
+}
+function showTip(ev, html) {
+  const t = $('#tooltip');
+  t.innerHTML = html; t.style.display = 'block';
+  t.style.left = (ev.clientX + 14) + 'px';
+  t.style.top = (ev.clientY + 14) + 'px';
+}
+function hideTip() { $('#tooltip').style.display = 'none'; }
+
+// ---------- 排名 ----------
+function renderRanking() {
+  const maxSus = Math.max(...current.Ranking.map(c => c.Suspicion), 0.001);
+  const injected = new Set(current.TrueRoots);
+  $('#rank-table tbody').innerHTML = current.Ranking.slice(0, 12).map(c => {
+    const cls = c.Origin === 'self' ? 'origin-self' : c.Origin === 'reverse' ? 'origin-reverse' : 'origin-propagated';
+    return `<tr class="rank-row ${selectedSvc === c.Service ? 'selected' : ''}" data-svc="${c.Service}">
+      <td>${c.Rank}</td>
+      <td class="svc-name">${injected.has(c.Service) ? '<span class="injected-dot">⭐</span> ' : ''}${c.Service}</td>
+      <td><div class="bar"><div style="width:${100*c.Suspicion/maxSus}%;background:var(--bad)"></div></div>
+        <span class="muted">${c.Suspicion.toFixed(4)}</span></td>
+      <td>${(c.VisitProb*100).toFixed(2)}%</td>
+      <td>${c.AnomalyScore.toFixed(3)}</td>
+      <td class="${cls}">${ORIGIN_CN[c.Origin]}</td></tr>`;
+  }).join('');
+  document.querySelectorAll('#rank-table .rank-row').forEach(tr =>
+    tr.onclick = () => { selectedSvc = tr.dataset.svc; renderRanking(); showEvidence(selectedSvc); });
+}
+
+// ---------- 证据 ----------
+function showEvidence(svc) {
+  const c = current.Ranking.find(x => x.Service === svc);
+  if (!c) return;
+  $('#evidence-empty').style.display = 'none';
+  const ev = $('#evidence');
+  ev.style.display = 'block';
+  let html = `<h3>${svc} · ${ORIGIN_CN[c.Origin]}</h3>`;
+  html += `<div class="muted">嫌疑分 ${c.Suspicion.toFixed(4)} = 访问概率 ${(c.VisitProb*100).toFixed(2)}% × 来源修正异常程度 ${c.RootScore.toFixed(3)}</div>`;
+  if (c.MetricEvidence && c.MetricEvidence.length) {
+    html += '<div style="margin-top:8px"><b>异常指标:</b><ul>' +
+      c.MetricEvidence.map(m => `<li><b>${METRIC_CN[m.Metric]}</b>: ${m.Detail} (异常分 ${m.Score.toFixed(2)})</li>`).join('') + '</ul></div>';
+  }
+  if (c.PropagationPath && c.PropagationPath.length > 1) {
+    html += '<div style="margin-top:8px"><b>传导路径(从入口):</b>';
+    html += `<div class="path-chain">${c.PropagationPath.join(' → ')}</div>`;
+    html += (c.PathMetrics || []).map(p => `<div class="muted" style="font-size:11px;margin:2px 0">${p}</div>`).join('');
+    html += '</div>';
+  } else {
+    html += '<div class="muted" style="margin-top:8px">该服务即告警入口,无上游传导路径。</div>';
+  }
+  ev.innerHTML = html;
+}
+
+// ---------- 异常分明细 ----------
+function renderAnomalyTable() {
+  const rows = [...current.Nodes].sort((a, b) => b.Score - a.Score).slice(0, 32);
+  $('#anomaly-table').innerHTML = `<table><thead><tr>
+    <th>服务</th><th>综合分</th><th>延迟z</th><th>错误z</th><th>CPU z</th><th>内存z</th><th>连接z</th><th>首越界</th>
+    </tr></thead><tbody>${rows.map(n => `<tr>
+      <td class="svc-name">${n.Service}</td><td>${n.Score.toFixed(3)}</td>
+      <td>${n.ZScore.latency.toFixed(1)}</td><td>${n.ZScore.error.toFixed(1)}</td>
+      <td>${n.ZScore.cpu.toFixed(1)}</td><td>${n.ZScore.mem.toFixed(1)}</td>
+      <td>${n.ZScore.conn.toFixed(1)}</td><td>${n.FirstBreach}</td></tr>`).join('')}</tbody></table>`;
+}
+
+// ---------- 注入对照 ----------
+function renderInjection() {
+  let html = `<div class="summary-grid" style="grid-template-columns:1fr 1fr">
+    <div class="kpi ${current.HitAt1 ? 'rca' : 'base'}"><div class="v">${current.HitAt1 ? '✓' : '✗'}</div><div class="l">RCA Hit@1<br>Hit@3: ${current.HitAt3 ? '✓' : '✗'}</div></div>
+    <div class="kpi base"><div class="v">${current.BaselineHit ? '✓' : '✗'}</div><div class="l">纯异常分 Hit@1<br>Hit@3: ${current.BaselineHit3 ? '✓' : '✗'}</div></div>
+  </div>`;
+  html += '<ul style="padding-left:16px;margin:10px 0">' + current.Faults.map(f =>
+    `<li><b>${f.Service}</b> 注入【${KIND_CN[f.Kind]}】强度 ${(f.Severity*100).toFixed(0)}%
+     tick ${f.Start}~${f.End}${f.Reverse ? ' <span class="origin-reverse">反向传导</span>' : ''}</li>`).join('') + '</ul>';
+  html += `<div class="muted">入口服务: <b>${current.Entry}</b> | 检测窗口 tick ${current.DetectedStart}~${current.DetectedEnd}
+    (真实 ${current.TrueStart}~${current.TrueEnd},偏差 ${current.WindowError} tick) | 基线 tick ${current.BaselineStart}~${current.BaselineEnd}</div>`;
+  if (current.Clusters && current.Clusters.length) {
+    html += '<div style="margin-top:8px"><b>检测到的故障簇:</b>' + current.Clusters.map((cl, i) =>
+      ` <span class="tag double">簇${i+1}: ${cl.Seed} (${cl.Members.length}服务, 入口相关 ${cl.EntryCorr.toFixed(2)})</span>`).join('') + '</div>';
+  }
+  html += '<div class="notes">' + current.Notes.map(n => `<div>• ${n}</div>`).join('') + '</div>';
+  $('#injection').innerHTML = html;
+}
+
+init();
+</script>
+</body>
+</html>
